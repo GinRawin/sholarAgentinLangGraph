@@ -15,7 +15,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pypdf import PdfReader
 
-from sholar_agent.utils.state import Paper, SummaryResult
+from scholar_agent.utils.state import Paper, SummaryResult
 
 
 SCHEMA_VERSION = 1
@@ -70,9 +70,9 @@ DEEP_ANALYSIS_TEMPLATE = """你是一个学术研究助理，需要生成可迭�
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="SHOLAR_")
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="scholar_")
 
-    db_path: Path = Field(default=Path("./data/sholar_agent.sqlite3"))
+    db_path: Path = Field(default=Path("./data/scholar_agent.sqlite3"))
     pdf_root: Path = Field(default=Path("./papers"))
     llm_provider: str = Field(default="placeholder")
     llm_model: str = Field(default="")

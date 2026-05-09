@@ -7,7 +7,7 @@ try:
 except ImportError:
     from langgraph.checkpoint.memory import MemorySaver as InMemorySaver
 
-from sholar_agent.utils.nodes import (
+from scholar_agent.utils.nodes import (
     draft_deep_analysis_note_node,
     generate_summary_node,
     human_note_review_node,
@@ -21,7 +21,7 @@ from sholar_agent.utils.nodes import (
     scan_library_node,
     select_unsummarized_paper_node,
 )
-from sholar_agent.utils.state import ResearchAgentState
+from scholar_agent.utils.state import ResearchAgentState
 
 
 def route_after_select_unsummarized(state: ResearchAgentState) -> str:
@@ -110,3 +110,11 @@ def build_graph():
 
 
 graph = build_graph()
+from PIL import Image
+import io
+img_data = graph.get_graph().draw_mermaid_png()
+
+img = Image.open(io.BytesIO(img_data))
+file_path = "langgraph_visualization.png"
+img.save(file_path)
+

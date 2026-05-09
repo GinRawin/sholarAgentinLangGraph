@@ -4,8 +4,8 @@ from pathlib import Path
 
 from langgraph.types import interrupt
 
-from sholar_agent.utils.state import ResearchAgentState, SummaryResult
-from sholar_agent.utils.tools import (
+from scholar_agent.utils.state import ResearchAgentState, SummaryResult
+from scholar_agent.utils.tools import (
     DEEP_ANALYSIS_TEMPLATE,
     SUMMARY_TEMPLATE,
     collect_known_terms,
