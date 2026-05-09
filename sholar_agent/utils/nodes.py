@@ -1,0 +1,287 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from langgraph.types import interrupt
+
+from sholar_agent.utils.state import ResearchAgentState, SummaryResult
+from sholar_agent.utils.tools import (
+    DEEP_ANALYSIS_TEMPLATE,
+    SUMMARY_TEMPLATE,
+    collect_known_terms,
+    default_pdf_root,
+    extract_pdf_text,
+    extract_pdf_title,
+    get_llm,
+    get_repository,
+    iter_pdf_paths,
+    read_related_notes,
+    serialize_paper,
+    write_final_note,
+)
+
+
+def initialize_memory_node(state: ResearchAgentState) -> ResearchAgentState:
+    del state
+    repository = get_repository()
+    repository.init_db()
+    return {"status": "memory_ready"}
+
+
+def scan_library_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    root = Path(state.get("pdf_root") or default_pdf_root())
+    scanned_count = 0
+
+    for pdf_path in iter_pdf_paths(root):
+        title = extract_pdf_title(pdf_path)
+        repository.upsert_scanned_paper(title=title, pdf_path=pdf_path)
+        scanned_count += 1
+
+    return {
+        "status": "library_scanned",
+        "pdf_root": str(root),
+        "scanned_count": scanned_count,
+    }
+
+
+def select_unsummarized_paper_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    pending = repository.list_pending_summary(limit=1)
+    paper = pending[0] if pending else None
+
+    if paper is None:
+        return {
+            "status": "no_unsummarized_paper",
+            "title": "",
+            "selected_paper": {},
+        }
+
+    return {
+        "status": "unsummarized_paper_selected",
+        "title": paper.title,
+        "selected_paper": serialize_paper(paper),
+    }
+
+
+def generate_summary_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    llm = get_llm()
+    title = state.get("title")
+    if not title:
+        return {"status": "error", "error": "title is required for summary generation"}
+
+    paper = repository.get_paper(title)
+    if paper is None:
+        return {"status": "error", "error": f"Paper not found: {title}"}
+
+    known_keywords, known_categories = collect_known_terms(repository)
+    paper_text = extract_pdf_text(paper.pdf_path)
+    prompt = SUMMARY_TEMPLATE.format(
+        known_keywords=", ".join(known_keywords) or "无",
+        known_categories=", ".join(known_categories) or "无",
+        paper_text=paper_text,
+    )
+    result = llm.summarize_paper(
+        title=paper.title,
+        prompt=prompt,
+        known_keywords=known_keywords,
+        known_categories=known_categories,
+    )
+    repository.save_summary(result)
+
+    return _summary_result_to_state(result) | {
+        "status": "summary_generated",
+        "paper_text": paper_text,
+        "known_keywords": known_keywords,
+        "known_categories": known_categories,
+    }
+
+
+def load_review_queue_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    limit = int(state.get("limit") or 20)
+    papers = repository.list_unread_summaries(limit=limit)
+    return {
+        "status": "review_queue_loaded",
+        "review_queue": [serialize_paper(paper) for paper in papers],
+    }
+
+
+def human_summary_review_node(state: ResearchAgentState) -> ResearchAgentState:
+    queue = state.get("review_queue", [])
+    if not queue:
+        return {"status": "no_summary_waiting_for_user"}
+
+    paper = queue[0]
+    decision = interrupt(
+        {
+            "kind": "summary_decision",
+            "paper": paper,
+            "prompt": "阅读摘要后请选择 deep_analysis 或 skip。",
+            "allowed_decisions": ["deep_analysis", "skip"],
+        }
+    )
+    if isinstance(decision, str):
+        decision = {"decision": decision}
+
+    user_decision = decision.get("decision", "skip")
+    if user_decision not in {"deep_analysis", "skip"}:
+        user_decision = "skip"
+
+    return {
+        "status": "summary_reviewed_by_user",
+        "title": paper["title"],
+        "selected_paper": paper,
+        "user_decision": user_decision,
+    }
+
+
+def record_summary_decision_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    title = state.get("title")
+    if not title:
+        return {
+            "status": "error",
+            "error": "title is required for user decision",
+        }
+
+    paper = repository.get_paper(title)
+    if paper is None:
+        return {"status": "error", "error": f"Paper not found: {title}"}
+
+    repository.mark_user_read(title)
+    decision = state.get("user_decision", "skip")
+    return {
+        "status": "summary_marked_read",
+        "title": title,
+        "user_decision": decision,
+        "selected_paper": serialize_paper(paper),
+    }
+
+
+def prepare_deep_analysis_context_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    title = state.get("title")
+    if not title:
+        return {"status": "error", "error": "title is required for deep analysis"}
+
+    paper = repository.get_paper(title)
+    if paper is None:
+        return {"status": "error", "error": f"Paper not found: {title}"}
+
+    related_papers = repository.list_by_categories(paper.categories, exclude_title=paper.title)
+    related_note_paths = [paper.note_path for paper in related_papers if paper.note_path]
+    related_notes = read_related_notes(related_note_paths)
+    paper_text = extract_pdf_text(paper.pdf_path)
+    prompt = DEEP_ANALYSIS_TEMPLATE.format(
+        related_notes=related_notes or "无",
+        paper_text=paper_text,
+    )
+    repository.mark_user_read(paper.title)
+
+    return {
+        "status": "deep_analysis_context_ready",
+        "title": paper.title,
+        "selected_paper": serialize_paper(paper),
+        "paper_text": paper_text,
+        "related_note_paths": related_note_paths,
+        "related_notes": related_notes,
+        "deep_analysis_prompt": prompt,
+    }
+
+
+def draft_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    llm = get_llm()
+    title = state.get("title")
+    prompt = state.get("deep_analysis_prompt")
+    if not title or not prompt:
+        return {"status": "error", "error": "title and deep_analysis_prompt are required"}
+
+    draft = llm.draft_deep_note(
+        title=title,
+        prompt=prompt,
+        related_note_paths=state.get("related_note_paths", []),
+    )
+    session_id = repository.create_deep_analysis_session(paper_title=title, draft_note=draft)
+    return {
+        "status": "deep_analysis_draft_created",
+        "draft_note": draft,
+        "deep_analysis_session_id": session_id,
+    }
+
+
+def human_note_review_node(state: ResearchAgentState) -> ResearchAgentState:
+    draft_note = state.get("draft_note", "")
+    payload = interrupt(
+        {
+            "kind": "note_review",
+            "title": state.get("title", ""),
+            "draft_note": draft_note,
+            "prompt": "请给出修改意见，或确认终稿。",
+            "allowed_actions": ["revise", "confirm"],
+        }
+    )
+    if isinstance(payload, str):
+        payload = {"action": "revise", "message": payload}
+
+    action = payload.get("action", "revise")
+    if action == "confirm":
+        return {
+            "status": "note_confirmed_by_user",
+            "note_review_action": "confirm",
+            "final_note": payload.get("final_note") or draft_note,
+        }
+
+    return {
+        "status": "note_revision_requested_by_user",
+        "note_review_action": "revise",
+        "user_message": payload.get("message", ""),
+    }
+
+
+def revise_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentState:
+    llm = get_llm()
+    title = state.get("title")
+    draft = state.get("draft_note")
+    user_message = state.get("user_message")
+    if not title or not draft or not user_message:
+        return {
+            "status": "error",
+            "error": "title, draft_note, and user_message are required",
+        }
+
+    revised = llm.revise_note(title=title, current_note=draft, user_message=user_message)
+    return {
+        "status": "deep_analysis_draft_revised",
+        "draft_note": revised,
+    }
+
+
+def save_final_note_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    title = state.get("title")
+    final_note = state.get("final_note") or state.get("draft_note")
+    if not title or not final_note:
+        return {"status": "error", "error": "title and final_note are required"}
+
+    paper = repository.get_paper(title)
+    if paper is None:
+        return {"status": "error", "error": f"Paper not found: {title}"}
+
+    note_path = write_final_note(paper=paper, final_note=final_note)
+    repository.mark_deep_analyzed(title=paper.title, note_path=note_path)
+    return {
+        "status": "final_note_saved",
+        "note_path": str(note_path),
+    }
+
+
+def _summary_result_to_state(result: SummaryResult) -> ResearchAgentState:
+    return {
+        "title": result.title,
+        "summary": result.summary,
+        "keywords": result.keywords,
+        "categories": result.categories,
+    }

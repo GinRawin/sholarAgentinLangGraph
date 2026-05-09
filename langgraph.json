@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "research_agent": "./sholar_agent/agent.py:graph"
+  },
+  "env": "./.env"
+}
