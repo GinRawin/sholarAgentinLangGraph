@@ -7,11 +7,11 @@
 - `initialize_memory`: 初始化长期记忆数据库
 - `scan_library`: 递归扫描 PDF 文件夹并登记论文
 - `select_unsummarized_paper`: 从数据库选择摘要未生成的论文
-- `generate_summary`: 读取 PDF 原文并生成摘要、关键词、分类
+- `generate_summary`: 读取 PDF 文件并以 base64 形式发送给模型，生成摘要、关键词、分类
 - `load_review_queue`: 加载摘要已生成但用户未读的论文
 - `human_summary_review`: 暂停给用户看摘要，用户只选择“深度分析”或“跳过”
 - `record_summary_decision`: 记录用户选择
-- `prepare_deep_analysis_context`: 读取原文和同分类历史笔记
+- `prepare_deep_analysis_context`: 准备论文 PDF 和同分类历史笔记
 - `draft_deep_analysis_note`: 生成深度分析笔记初稿
 - `human_note_review`: 暂停给用户看笔记初稿，用户提出修改意见或确认终稿
 - `revise_deep_analysis_note`: 根据用户反馈修改笔记初稿，并再次回到 human 节点
@@ -54,8 +54,10 @@ cp .env.example .env
 
 - `SHOLAR_DB_PATH`: SQLite 数据库路径，默认 `./data/scholar_agent.sqlite3`
 - `SHOLAR_PDF_ROOT`: 默认递归扫描 PDF 的根目录，默认 `./papers`
-- `SHOLAR_LLM_PROVIDER`: LLM 适配器名，当前为 `placeholder`
-- `SHOLAR_LLM_MODEL`: 模型名，占位字段
+- `SHOLAR_LLM_PROVIDER`: `placeholder` 时使用占位实现，其他值都会走远程 LLM 接口
+- `SHOLAR_API_KEY`: 调用模型生成摘要和笔记时使用的 API Key
+- `SHOLAR_LLM_MODEL`: 模型名
+- `SHOLAR_BASE_URL`: 远程 LLM 的完整请求 URL，直接按 `.env` 配置使用，不做额外拼接
 
 ## 启动
 

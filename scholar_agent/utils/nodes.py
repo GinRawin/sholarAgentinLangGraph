@@ -8,9 +8,9 @@ from scholar_agent.utils.state import ResearchAgentState, SummaryResult
 from scholar_agent.utils.tools import (
     DEEP_ANALYSIS_TEMPLATE,
     SUMMARY_TEMPLATE,
+    build_pdf_attachment,
     collect_known_terms,
     default_pdf_root,
-    extract_pdf_text,
     extract_pdf_title,
     get_llm,
     get_repository,
@@ -76,23 +76,22 @@ def generate_summary_node(state: ResearchAgentState) -> ResearchAgentState:
         return {"status": "error", "error": f"Paper not found: {title}"}
 
     known_keywords, known_categories = collect_known_terms(repository)
-    paper_text = extract_pdf_text(paper.pdf_path)
+    pdf_attachment = build_pdf_attachment(paper.pdf_path)
     prompt = SUMMARY_TEMPLATE.format(
         known_keywords=", ".join(known_keywords) or "无",
         known_categories=", ".join(known_categories) or "无",
-        paper_text=paper_text,
     )
     result = llm.summarize_paper(
         title=paper.title,
         prompt=prompt,
         known_keywords=known_keywords,
         known_categories=known_categories,
+        pdf_attachment=pdf_attachment,
     )
     repository.save_summary(result)
 
     return _summary_result_to_state(result) | {
         "status": "summary_generated",
-        "paper_text": paper_text,
         "known_keywords": known_keywords,
         "known_categories": known_categories,
     }
@@ -168,10 +167,8 @@ def prepare_deep_analysis_context_node(state: ResearchAgentState) -> ResearchAge
     related_papers = repository.list_by_categories(paper.categories, exclude_title=paper.title)
     related_note_paths = [paper.note_path for paper in related_papers if paper.note_path]
     related_notes = read_related_notes(related_note_paths)
-    paper_text = extract_pdf_text(paper.pdf_path)
     prompt = DEEP_ANALYSIS_TEMPLATE.format(
         related_notes=related_notes or "无",
-        paper_text=paper_text,
     )
     repository.mark_user_read(paper.title)
 
@@ -179,7 +176,6 @@ def prepare_deep_analysis_context_node(state: ResearchAgentState) -> ResearchAge
         "status": "deep_analysis_context_ready",
         "title": paper.title,
         "selected_paper": serialize_paper(paper),
-        "paper_text": paper_text,
         "related_note_paths": related_note_paths,
         "related_notes": related_notes,
         "deep_analysis_prompt": prompt,
@@ -194,10 +190,15 @@ def draft_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentSta
     if not title or not prompt:
         return {"status": "error", "error": "title and deep_analysis_prompt are required"}
 
+    paper = repository.get_paper(title)
+    if paper is None:
+        return {"status": "error", "error": f"Paper not found: {title}"}
+
     draft = llm.draft_deep_note(
         title=title,
         prompt=prompt,
         related_note_paths=state.get("related_note_paths", []),
+        pdf_attachment=build_pdf_attachment(paper.pdf_path),
     )
     session_id = repository.create_deep_analysis_session(paper_title=title)
     return {

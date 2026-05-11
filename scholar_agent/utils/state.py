@@ -63,7 +63,6 @@ class ResearchAgentState(TypedDict, total=False):
 
     known_keywords: list[str]
     known_categories: list[str]
-    paper_text: str
     summary: str
     keywords: list[str]
     categories: list[str]
