@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import urllib.error
+import urllib.request
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -70,12 +73,18 @@ DEEP_ANALYSIS_TEMPLATE = """你是一个学术研究助理，需要生成可迭�
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="scholar_")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="sholar_",
+        extra="ignore",
+    )
 
     db_path: Path = Field(default=Path("./data/scholar_agent.sqlite3"))
     pdf_root: Path = Field(default=Path("./papers"))
     llm_provider: str = Field(default="placeholder")
     llm_model: str = Field(default="")
+    deepseek_api_key: str = Field(default="")
+    deepseek_base_url: str = Field(default="https://api.deepseek.com")
 
 
 @lru_cache(maxsize=1)
@@ -157,9 +166,154 @@ class PlaceholderLLMClient:
         )
 
 
+@dataclass(slots=True)
+class DeepSeekLLMClient:
+    api_key: str
+    model: str
+    base_url: str = "https://api.deepseek.com"
+
+    def summarize_paper(
+        self,
+        *,
+        title: str,
+        prompt: str,
+        known_keywords: list[str],
+        known_categories: list[str],
+    ) -> SummaryResult:
+        del known_keywords, known_categories
+        response_text = self._chat(
+            system_message="你是一个严谨的学术论文阅读助手。",
+            user_message=(
+                f"{prompt}\n\n"
+                "请直接输出 JSON 对象，字段必须包含："
+                "summary, keywords, categories, conference, publication_time。"
+            ),
+        )
+        payload = self._parse_json_object(response_text)
+        return SummaryResult(
+            title=title,
+            summary=str(payload.get("summary") or response_text).strip(),
+            keywords=self._normalize_string_list(payload.get("keywords"), fallback=["未分类关键词"]),
+            categories=self._normalize_string_list(
+                payload.get("categories"),
+                fallback=["未分类"],
+            ),
+            conference=self._normalize_optional_string(payload.get("conference")),
+            publication_time=self._normalize_optional_string(payload.get("publication_time")),
+        )
+
+    def draft_deep_note(self, *, title: str, prompt: str, related_note_paths: list[str]) -> str:
+        del related_note_paths
+        return self._chat(
+            system_message="你是一个严谨的学术研究助理。",
+            user_message=f"论文标题：{title}\n\n{prompt}",
+        ).strip()
+
+    def revise_note(self, *, title: str, current_note: str, user_message: str) -> str:
+        return self._chat(
+            system_message="你是一个严谨的学术研究助理，请根据用户反馈修改论文笔记。",
+            user_message=(
+                f"论文标题：{title}\n\n"
+                f"当前笔记：\n{current_note}\n\n"
+                f"用户修改意见：\n{user_message}\n\n"
+                "请返回完整修订后的笔记，不要解释。"
+            ),
+        ).strip()
+
+    def _chat(self, *, system_message: str, user_message: str) -> str:
+        if not self.api_key:
+            raise ValueError("DEEPSEEK_API_KEY is required when SHOLAR_LLM_PROVIDER=deepseek")
+
+        body = {
+            "model": self.model or "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": 0.2,
+        }
+        request = urllib.request.Request(
+            url=f"{self.base_url.rstrip('/')}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise ValueError(f"DeepSeek request failed with HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise ValueError(f"DeepSeek request failed: {exc.reason}") from exc
+
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ValueError("DeepSeek response did not include any choices")
+
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = [
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            ]
+            return "\n".join(part for part in text_parts if part).strip()
+        raise ValueError("DeepSeek response content was empty")
+
+    @staticmethod
+    def _parse_json_object(value: str) -> dict[str, Any]:
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return {}
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _normalize_string_list(value: Any, *, fallback: list[str]) -> list[str]:
+        if not isinstance(value, list):
+            return fallback
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return items or fallback
+
+    @staticmethod
+    def _normalize_optional_string(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 def build_llm_client(provider: str, model: str) -> LLMClient:
     if provider == "placeholder":
         return PlaceholderLLMClient(model=model)
+    if provider == "deepseek":
+        settings = get_settings()
+        api_key = settings.deepseek_api_key or os.getenv("DEEPSEEK_API_KEY", "")
+        return DeepSeekLLMClient(
+            api_key=api_key,
+            model=model or "deepseek-chat",
+            base_url=settings.deepseek_base_url,
+        )
     raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
@@ -389,7 +543,7 @@ class PaperRepository:
                 (str(note_path), now, title),
             )
 
-def create_deep_analysis_session(self, *, paper_title: str, draft_note: str) -> int:
+    def create_deep_analysis_session(self, *, paper_title: str, draft_note: str) -> int:
         now = utc_now_iso()
         with self.connect() as conn:
             cursor = conn.execute(
@@ -405,6 +559,20 @@ def create_deep_analysis_session(self, *, paper_title: str, draft_note: str) -> 
                 (paper_title, draft_note, now, now),
             )
             return int(cursor.lastrowid)
+
+    def confirm_deep_analysis_session(self, *, session_id: int, note_path: Path | str) -> None:
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE deep_analysis_sessions
+                SET final_note_path = ?,
+                    confirmed = 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (str(note_path), now, session_id),
+            )
 
 
 def iter_pdf_paths(root: Path | str) -> list[Path]:

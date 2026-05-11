@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 
 try:
@@ -48,7 +50,7 @@ def route_after_note_review(state: ResearchAgentState) -> str:
     return "revise_deep_analysis_note"
 
 
-def build_graph():
+def build_graph(*, checkpointer: Any | None = None):
     builder = StateGraph(ResearchAgentState)
 
     builder.add_node("initialize_memory", initialize_memory_node)
@@ -106,15 +108,10 @@ def build_graph():
     builder.add_edge("revise_deep_analysis_note", "human_note_review")
     builder.add_edge("save_final_note", "load_review_queue")
 
-    return builder.compile(checkpointer=InMemorySaver())
+    if checkpointer is None:
+        return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 graph = build_graph()
-from PIL import Image
-import io
-img_data = graph.get_graph().draw_mermaid_png()
-
-img = Image.open(io.BytesIO(img_data))
-file_path = "langgraph_visualization.png"
-img.save(file_path)
-
+local_graph = build_graph(checkpointer=InMemorySaver())

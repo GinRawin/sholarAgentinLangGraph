@@ -100,7 +100,7 @@ def generate_summary_node(state: ResearchAgentState) -> ResearchAgentState:
 
 def load_review_queue_node(state: ResearchAgentState) -> ResearchAgentState:
     repository = get_repository()
-    limit = int(state.get("limit") or 20)
+    limit = int(state.get("limit") or 5)
     papers = repository.list_unread_summaries(limit=limit)
     return {
         "status": "review_queue_loaded",
@@ -114,7 +114,7 @@ def human_summary_review_node(state: ResearchAgentState) -> ResearchAgentState:
         return {"status": "no_summary_waiting_for_user"}
 
     paper = queue[0]
-    decision = interrupt(
+    payload = interrupt(
         {
             "kind": "summary_decision",
             "paper": paper,
@@ -122,12 +122,7 @@ def human_summary_review_node(state: ResearchAgentState) -> ResearchAgentState:
             "allowed_decisions": ["deep_analysis", "skip"],
         }
     )
-    if isinstance(decision, str):
-        decision = {"decision": decision}
-
-    user_decision = decision.get("decision", "skip")
-    if user_decision not in {"deep_analysis", "skip"}:
-        user_decision = "skip"
+    user_decision = _normalize_summary_decision(payload)
 
     return {
         "status": "summary_reviewed_by_user",
@@ -223,21 +218,20 @@ def human_note_review_node(state: ResearchAgentState) -> ResearchAgentState:
             "allowed_actions": ["revise", "confirm"],
         }
     )
-    if isinstance(payload, str):
-        payload = {"action": "revise", "message": payload}
-
-    action = payload.get("action", "revise")
-    if action == "confirm":
+    message = str(payload).strip()
+    first_word = message.split(maxsplit=1)[0].lower() if message else ""
+    if first_word == "confirm":
+        final_note = message[len("confirm") :].strip() or draft_note
         return {
             "status": "note_confirmed_by_user",
             "note_review_action": "confirm",
-            "final_note": payload.get("final_note") or draft_note,
+            "final_note": final_note,
         }
 
     return {
         "status": "note_revision_requested_by_user",
         "note_review_action": "revise",
-        "user_message": payload.get("message", ""),
+        "user_message": message,
     }
 
 
@@ -272,6 +266,9 @@ def save_final_note_node(state: ResearchAgentState) -> ResearchAgentState:
 
     note_path = write_final_note(paper=paper, final_note=final_note)
     repository.mark_deep_analyzed(title=paper.title, note_path=note_path)
+    session_id = state.get("deep_analysis_session_id")
+    if session_id:
+        repository.confirm_deep_analysis_session(session_id=session_id, note_path=note_path)
     return {
         "status": "final_note_saved",
         "note_path": str(note_path),
@@ -285,3 +282,17 @@ def _summary_result_to_state(result: SummaryResult) -> ResearchAgentState:
         "keywords": result.keywords,
         "categories": result.categories,
     }
+
+
+def _normalize_summary_decision(payload: object) -> str:
+    if isinstance(payload, int):
+        return {0: "deep_analysis", 1: "skip"}.get(payload, "skip")
+
+    text = str(payload).strip().lower()
+    if text == "0":
+        return "deep_analysis"
+    if text == "1":
+        return "skip"
+    if text in {"deep_analysis", "skip"}:
+        return text
+    return "skip"
