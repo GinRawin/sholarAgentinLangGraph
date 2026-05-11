@@ -21,7 +21,7 @@ from pypdf import PdfReader
 from scholar_agent.utils.state import Paper, SummaryResult
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SUMMARY_TEMPLATE = """你是一个严谨的学术论文阅读助手。
 
@@ -369,7 +369,6 @@ class PaperRepository:
                 CREATE TABLE IF NOT EXISTS deep_analysis_sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     paper_title TEXT NOT NULL,
-                    draft_note TEXT,
                     final_note_path TEXT,
                     confirmed INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
@@ -378,6 +377,7 @@ class PaperRepository:
                 )
                 """
             )
+            self._migrate_deep_analysis_sessions(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_papers_summary_user_read
@@ -392,6 +392,50 @@ class PaperRepository:
                 """,
                 (str(SCHEMA_VERSION),),
             )
+
+    def _migrate_deep_analysis_sessions(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(deep_analysis_sessions)").fetchall()
+        }
+        if "draft_note" not in columns:
+            return
+
+        conn.execute("ALTER TABLE deep_analysis_sessions RENAME TO deep_analysis_sessions_old")
+        conn.execute(
+            """
+            CREATE TABLE deep_analysis_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_title TEXT NOT NULL,
+                final_note_path TEXT,
+                confirmed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (paper_title) REFERENCES papers(title)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO deep_analysis_sessions (
+                id,
+                paper_title,
+                final_note_path,
+                confirmed,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                paper_title,
+                final_note_path,
+                confirmed,
+                created_at,
+                updated_at
+            FROM deep_analysis_sessions_old
+            """
+        )
+        conn.execute("DROP TABLE deep_analysis_sessions_old")
 
     def upsert_scanned_paper(
         self,
@@ -543,20 +587,19 @@ class PaperRepository:
                 (str(note_path), now, title),
             )
 
-    def create_deep_analysis_session(self, *, paper_title: str, draft_note: str) -> int:
+    def create_deep_analysis_session(self, *, paper_title: str) -> int:
         now = utc_now_iso()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO deep_analysis_sessions (
                     paper_title,
-                    draft_note,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?)
                 """,
-                (paper_title, draft_note, now, now),
+                (paper_title, now, now),
             )
             return int(cursor.lastrowid)
 

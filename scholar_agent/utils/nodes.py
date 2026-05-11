@@ -199,7 +199,7 @@ def draft_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentSta
         prompt=prompt,
         related_note_paths=state.get("related_note_paths", []),
     )
-    session_id = repository.create_deep_analysis_session(paper_title=title, draft_note=draft)
+    session_id = repository.create_deep_analysis_session(paper_title=title)
     return {
         "status": "deep_analysis_draft_created",
         "draft_note": draft,
