@@ -71,6 +71,7 @@
 当前 PDF 流程是：
 
 - `generate_summary_node` 直接把 `build_pdf_attachment(paper.pdf_path)` 传给 LLM
+- `prepare_deep_analysis_context_node` 先筛选同分类历史笔记，再按关键词命中数排序，保留前 5 篇
 - `draft_deep_analysis_note_node` 也直接把 PDF 附件传给 LLM
 - 本地主要负责扫描文件、提取标题、构造附件和保存结果
 

@@ -165,7 +165,16 @@ def prepare_deep_analysis_context_node(state: ResearchAgentState) -> ResearchAge
         return {"status": "error", "error": f"Paper not found: {title}"}
 
     related_papers = repository.list_by_categories(paper.categories, exclude_title=paper.title)
-    related_note_paths = [paper.note_path for paper in related_papers if paper.note_path]
+    ranked_related_papers = sorted(
+        related_papers,
+        key=lambda related: (
+            _keyword_overlap_count(paper.keywords, related.keywords),
+            related.updated_at.timestamp() if related.updated_at else 0.0,
+            related.title,
+        ),
+        reverse=True,
+    )
+    related_note_paths = [paper.note_path for paper in ranked_related_papers if paper.note_path][:5]
     related_notes = read_related_notes(related_note_paths)
     prompt = DEEP_ANALYSIS_TEMPLATE.format(
         related_notes=related_notes or "无",
@@ -180,6 +189,23 @@ def prepare_deep_analysis_context_node(state: ResearchAgentState) -> ResearchAge
         "related_notes": related_notes,
         "deep_analysis_prompt": prompt,
     }
+
+
+def _keyword_overlap_count(source_keywords: list[str], candidate_keywords: list[str]) -> int:
+    source = {
+        str(keyword).strip().casefold()
+        for keyword in source_keywords
+        if str(keyword).strip()
+    }
+    if not source:
+        return 0
+
+    candidate = {
+        str(keyword).strip().casefold()
+        for keyword in candidate_keywords
+        if str(keyword).strip()
+    }
+    return len(source.intersection(candidate))
 
 
 def draft_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentState:
