@@ -68,7 +68,13 @@ class LLMClient(Protocol):
     ) -> str:
         ...
 
-    def revise_note(self, *, title: str, current_note: str, user_message: str) -> str:
+    def revise_note(
+        self,
+        *,
+        title: str,
+        current_note: str,
+        user_message: str,
+    ) -> str:
         ...
 
     def answer_note_question(
@@ -143,7 +149,13 @@ class PlaceholderLLMClient:
             "## 个人研究启发\n\nTODO\n"
         )
 
-    def revise_note(self, *, title: str, current_note: str, user_message: str) -> str:
+    def revise_note(
+        self,
+        *,
+        title: str,
+        current_note: str,
+        user_message: str,
+    ) -> str:
         return (
             f"{current_note.rstrip()}\n\n"
             f"## Revision Request For {title}\n\n"
@@ -219,7 +231,13 @@ class DeepSeekLLMClient:
             ),
         ).strip()
 
-    def revise_note(self, *, title: str, current_note: str, user_message: str) -> str:
+    def revise_note(
+        self,
+        *,
+        title: str,
+        current_note: str,
+        user_message: str,
+    ) -> str:
         return self._chat(
             system_message="你是一个严谨的学术研究助理，请根据用户反馈修改论文笔记。",
             user_message=(

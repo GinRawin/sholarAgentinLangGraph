@@ -17,8 +17,6 @@ class PaperDeletionPlan:
     title: str
     pdf_path: Path | None
     note_path: Path | None
-    graph_asset_paths: list[Path]
-    graph_asset_dirs: list[Path]
     deep_analysis_session_count: int
 
 
@@ -27,7 +25,6 @@ class PaperDeletionResult:
     title: str
     deleted_files: list[Path]
     missing_files: list[Path]
-    deleted_dirs: list[Path]
     deleted_db_rows: dict[str, int]
 
 
@@ -78,23 +75,6 @@ def build_deletion_plan(conn: sqlite3.Connection, title: str) -> PaperDeletionPl
     if row is None:
         return None
 
-    asset_rows = conn.execute(
-        """
-        SELECT asset_path
-        FROM graph_table_assets
-        WHERE paper_title = ?
-        ORDER BY asset_index ASC
-        """,
-        (title,),
-    ).fetchall()
-    graph_asset_paths = [resolve_stored_path(str(asset_row["asset_path"])) for asset_row in asset_rows]
-    graph_asset_paths = [path for path in graph_asset_paths if path is not None]
-
-    graph_asset_dirs = sorted(
-        {path.parent for path in graph_asset_paths},
-        key=lambda path: len(path.parts),
-        reverse=True,
-    )
     deep_analysis_session_count = int(
         conn.execute(
             """
@@ -109,8 +89,6 @@ def build_deletion_plan(conn: sqlite3.Connection, title: str) -> PaperDeletionPl
         title=str(row["title"]),
         pdf_path=resolve_stored_path(row["pdf_path"]),
         note_path=resolve_stored_path(row["note_path"]),
-        graph_asset_paths=graph_asset_paths,
-        graph_asset_dirs=graph_asset_dirs,
         deep_analysis_session_count=deep_analysis_session_count,
     )
 
@@ -149,7 +127,6 @@ def delete_paper_bundle(*, db_path: Path | str, title: str) -> PaperDeletionResu
 
     deleted_files: list[Path] = []
     missing_files: list[Path] = []
-    deleted_dirs: list[Path] = []
     file_errors: list[str] = []
 
     file_paths: list[Path] = []
@@ -157,8 +134,6 @@ def delete_paper_bundle(*, db_path: Path | str, title: str) -> PaperDeletionResu
         file_paths.append(plan.note_path)
     if plan.pdf_path is not None:
         file_paths.append(plan.pdf_path)
-    file_paths.extend(plan.graph_asset_paths)
-
     seen_paths: set[Path] = set()
     unique_paths: list[Path] = []
     for path in file_paths:
@@ -180,20 +155,6 @@ def delete_paper_bundle(*, db_path: Path | str, title: str) -> PaperDeletionResu
         except OSError as exc:
             file_errors.append(f"Failed to delete {path}: {exc}")
 
-    for directory in plan.graph_asset_dirs:
-        if not directory.exists():
-            continue
-        try:
-            next(directory.iterdir())
-        except StopIteration:
-            try:
-                directory.rmdir()
-                deleted_dirs.append(directory)
-            except OSError as exc:
-                file_errors.append(f"Failed to remove empty directory {directory}: {exc}")
-        except OSError as exc:
-            file_errors.append(f"Failed to inspect directory {directory}: {exc}")
-
     if file_errors:
         error_text = "\n".join(file_errors)
         raise RuntimeError(f"Aborting database deletion because file cleanup failed:\n{error_text}")
@@ -201,10 +162,6 @@ def delete_paper_bundle(*, db_path: Path | str, title: str) -> PaperDeletionResu
     conn = sqlite3.connect(resolved_db_path)
     try:
         with conn:
-            graph_table_deleted = conn.execute(
-                "DELETE FROM graph_table_assets WHERE paper_title = ?",
-                (title,),
-            ).rowcount
             sessions_deleted = conn.execute(
                 "DELETE FROM deep_analysis_sessions WHERE paper_title = ?",
                 (title,),
@@ -220,11 +177,9 @@ def delete_paper_bundle(*, db_path: Path | str, title: str) -> PaperDeletionResu
         title=title,
         deleted_files=deleted_files,
         missing_files=missing_files,
-        deleted_dirs=deleted_dirs,
         deleted_db_rows={
             "papers": int(papers_deleted or 0),
             "deep_analysis_sessions": int(sessions_deleted or 0),
-            "graph_table_assets": int(graph_table_deleted or 0),
         },
     )
 
@@ -234,7 +189,6 @@ def confirm_plan(plan: PaperDeletionPlan, *, db_path: Path) -> bool:
     print(f"Paper: {plan.title}")
     print(f"PDF: {plan.pdf_path or 'N/A'}")
     print(f"Note: {plan.note_path or 'N/A'}")
-    print(f"Graph assets: {len(plan.graph_asset_paths)}")
     print(f"Deep analysis sessions: {plan.deep_analysis_session_count}")
     answer = input("Delete this paper and all related files? [y/N]: ").strip().lower()
     return answer in {"y", "yes"}
@@ -290,7 +244,6 @@ def main() -> int:
         print(f"- {table_name}: {count}")
     print(f"- deleted files: {len(result.deleted_files)}")
     print(f"- missing files: {len(result.missing_files)}")
-    print(f"- deleted asset dirs: {len(result.deleted_dirs)}")
     return 0
 
 
