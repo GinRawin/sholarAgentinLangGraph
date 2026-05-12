@@ -7,7 +7,7 @@
 这个仓库是一个基于 LangGraph 的论文阅读 agent，目标流程是：
 
 1. 扫描 `papers/` 下的 PDF
-2. 为未摘要论文生成结构化摘要
+2. 直接把原始 PDF 作为附件发送给大模型，生成结构化摘要
 3. 把已摘要但未阅读的论文交给人类确认
 4. 需要时生成深度笔记初稿
 5. 接收人类修改意见并保存终稿
@@ -17,7 +17,7 @@
 - `langgraph.json`：LangGraph 读取 graph 的入口配置
 - `scholar_agent/agent.py`：图定义、路由、graph 导出
 - `scholar_agent/utils/nodes.py`：所有节点逻辑
-- `scholar_agent/utils/tools.py`：数据库、LLM、PDF、文件读写等基础工具
+- `scholar_agent/utils/tools.py`：数据库、LLM、PDF 附件构建、文件读写等基础工具
 - `scholar_agent/utils/state.py`：状态与数据结构定义
 
 ## 目录职责
@@ -68,6 +68,12 @@
 
 这里负责业务编排，不建议塞太多底层 I/O 细节。
 
+当前 PDF 流程是：
+
+- `generate_summary_node` 直接把 `build_pdf_attachment(paper.pdf_path)` 传给 LLM
+- `draft_deep_analysis_note_node` 也直接把 PDF 附件传给 LLM
+- 本地主要负责扫描文件、提取标题、构造附件和保存结果
+
 当前两个 human 节点的输入约定：
 
 - `human_summary_review_node`
@@ -91,10 +97,12 @@
 - `PaperRepository`
 - `PlaceholderLLMClient`
 - `DeepSeekLLMClient`
-- PDF 解析函数
+- PDF 扫描、标题提取、base64 附件构建函数
 - 文件写入函数
 
 如果要换数据库、换 LLM、改 PDF 附件发送逻辑，优先改这里。
+
+注意：当前 `llm_model` 最好显式配置，不再依赖旧版默认兜底模型名。
 
 ### `langgraph.json`
 
