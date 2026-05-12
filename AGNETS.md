@@ -72,7 +72,7 @@
 
 - `generate_summary_node` 直接把 `build_pdf_attachment(paper.pdf_path)` 传给 LLM
 - `prepare_deep_analysis_context_node` 先筛选同分类历史笔记，再按关键词命中数排序，保留前 5 篇
-- `draft_deep_analysis_note_node` 也直接把 PDF 附件传给 LLM
+- `draft_deep_analysis_note_node` 也直接把 PDF 附件传给 LLM，并在首次生成后立即把草稿写到 `*.notes.md`
 - 本地主要负责扫描文件、提取标题、构造附件和保存结果
 
 当前两个 human 节点的输入约定：
@@ -83,9 +83,10 @@
   - `0 -> deep_analysis`
   - `1 -> skip`
 - `human_note_review_node`
+  - 展示的是当前已落盘的笔记内容
   - 把返回值按字符串处理
   - 第一个词是 `confirm` 就走保存
-  - 其他情况都走 revise
+  - 其他情况都视为用户问题或修改请求，先回答问题，再基于回答修订笔记并覆盖原草稿文件
 
 ### `scholar_agent/utils/tools.py`
 
@@ -104,6 +105,15 @@
 如果要换数据库、换 LLM、改 PDF 附件发送逻辑，优先改这里。
 
 注意：当前 `llm_model` 最好显式配置，不再依赖旧版默认兜底模型名。
+
+### `scholar_agent/config.py`
+
+放可直接调整的提示词模板：
+
+- `SUMMARY_TEMPLATE`
+- `DEEP_ANALYSIS_TEMPLATE`
+
+如果想改摘要风格或 deep_analysis 输出格式，优先改这里。
 
 ### `langgraph.json`
 

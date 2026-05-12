@@ -4,21 +4,9 @@ from pathlib import Path
 
 from langgraph.types import interrupt
 
+from scholar_agent.config import DEEP_ANALYSIS_TEMPLATE, SUMMARY_TEMPLATE
 from scholar_agent.utils.state import ResearchAgentState, SummaryResult
-from scholar_agent.utils.tools import (
-    DEEP_ANALYSIS_TEMPLATE,
-    SUMMARY_TEMPLATE,
-    build_pdf_attachment,
-    collect_known_terms,
-    default_pdf_root,
-    extract_pdf_title,
-    get_llm,
-    get_repository,
-    iter_pdf_paths,
-    read_related_notes,
-    serialize_paper,
-    write_final_note,
-)
+from scholar_agent.utils.tools import build_pdf_attachment, collect_known_terms, default_pdf_root, extract_pdf_title, get_llm, get_repository, iter_pdf_paths, read_note, read_related_notes, serialize_paper, write_draft_note, write_final_note
 
 
 def initialize_memory_node(state: ResearchAgentState) -> ResearchAgentState:
@@ -227,15 +215,25 @@ def draft_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentSta
         pdf_attachment=build_pdf_attachment(paper.pdf_path),
     )
     session_id = repository.create_deep_analysis_session(paper_title=title)
+    note_path = write_draft_note(paper=paper, draft_note=draft)
     return {
         "status": "deep_analysis_draft_created",
         "draft_note": draft,
+        "note_path": str(note_path),
         "deep_analysis_session_id": session_id,
     }
 
 
 def human_note_review_node(state: ResearchAgentState) -> ResearchAgentState:
-    draft_note = state.get("draft_note", "")
+    note_path = state.get("note_path")
+    draft_note = ""
+    if note_path:
+        try:
+            draft_note = read_note(note_path)
+        except FileNotFoundError:
+            draft_note = state.get("draft_note", "")
+    else:
+        draft_note = state.get("draft_note", "")
     payload = interrupt(
         {
             "kind": "note_review",
@@ -265,25 +263,61 @@ def human_note_review_node(state: ResearchAgentState) -> ResearchAgentState:
 def revise_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentState:
     llm = get_llm()
     title = state.get("title")
-    draft = state.get("draft_note")
+    note_path = state.get("note_path")
     user_message = state.get("user_message")
-    if not title or not draft or not user_message:
+    if not title or not note_path or not user_message:
         return {
             "status": "error",
-            "error": "title, draft_note, and user_message are required",
+            "error": "title, note_path, and user_message are required",
         }
 
-    revised = llm.revise_note(title=title, current_note=draft, user_message=user_message)
+    try:
+        current_note = read_note(note_path)
+    except FileNotFoundError:
+        return {
+            "status": "error",
+            "error": f"Note file not found: {note_path}",
+        }
+
+    question_answer = llm.answer_note_question(
+        title=title,
+        current_note=current_note,
+        user_question=user_message,
+    )
+    revision_prompt = (
+        f"用户问题或修改请求：\n{user_message.strip()}\n\n"
+        f"针对该问题的回答：\n{question_answer.strip()}\n\n"
+        "请基于上面的回答更新整篇笔记，返回完整修订后的笔记。"
+    )
+    revised = llm.revise_note(
+        title=title,
+        current_note=current_note,
+        user_message=revision_prompt,
+    )
+    repository = get_repository()
+    paper = repository.get_paper(title)
+    if paper is None:
+        return {"status": "error", "error": f"Paper not found: {title}"}
+
+    write_draft_note(paper=paper, draft_note=revised)
     return {
         "status": "deep_analysis_draft_revised",
+        "question_answer": question_answer,
         "draft_note": revised,
+        "note_path": str(note_path),
     }
 
 
 def save_final_note_node(state: ResearchAgentState) -> ResearchAgentState:
     repository = get_repository()
     title = state.get("title")
+    note_path = state.get("note_path")
     final_note = state.get("final_note") or state.get("draft_note")
+    if not final_note and note_path:
+        try:
+            final_note = read_note(note_path)
+        except FileNotFoundError:
+            final_note = None
     if not title or not final_note:
         return {"status": "error", "error": "title and final_note are required"}
 

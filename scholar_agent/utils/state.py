@@ -70,6 +70,7 @@ class ResearchAgentState(TypedDict, total=False):
     user_decision: UserDecision
     note_review_action: NoteReviewAction
     user_message: str
+    question_answer: str
     final_note: str
 
     related_note_paths: list[str]

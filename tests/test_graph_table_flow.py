@@ -170,6 +170,7 @@ def test_draft_node_writes_note_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr(nodes, "get_llm", lambda: FakeLLM())
     monkeypatch.setattr(nodes, "get_repository", lambda: FakeRepo())
+    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.4 test")
 
     result = nodes.draft_deep_analysis_note_node(
         {
@@ -189,12 +190,24 @@ def test_draft_node_writes_note_file(monkeypatch, tmp_path):
 
 def test_revise_node_updates_note_file(monkeypatch, tmp_path):
     class FakeLLM:
+        def answer_note_question(self, *, title: str, current_note: str, user_question: str) -> str:
+            del title, current_note
+            return f"answer: {user_question}"
+
         def revise_note(self, *, title: str, current_note: str, user_message: str) -> str:
-            del title, user_message
+            del title
+            assert "针对该问题的回答" in user_message
+            assert "answer: 请补充细节" in user_message
             return current_note + "\n\nrevised"
 
-    monkeypatch.setattr(nodes, "get_llm", lambda: FakeLLM())
+    class FakeRepo:
+        def get_paper(self, title: str) -> tools.Paper:
+            return tools.Paper(title=title, pdf_path=str(tmp_path / "paper.pdf"))
 
+    monkeypatch.setattr(nodes, "get_llm", lambda: FakeLLM())
+    monkeypatch.setattr(nodes, "get_repository", lambda: FakeRepo())
+
+    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.4 test")
     note_path = tmp_path / "paper.notes.md"
     note_path.write_text("# Draft\n\ncontent", encoding="utf-8")
 
@@ -209,7 +222,74 @@ def test_revise_node_updates_note_file(monkeypatch, tmp_path):
     )
 
     assert result["status"] == "deep_analysis_draft_revised"
+    assert result["question_answer"] == "answer: 请补充细节"
     assert note_path.read_text(encoding="utf-8").endswith("revised")
+
+
+def test_human_note_review_reads_note_from_disk(monkeypatch, tmp_path):
+    note_path = tmp_path / "paper.notes.md"
+    note_path.write_text("# Draft From Disk\n\ncontent", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_interrupt(payload: object) -> object:
+        captured["payload"] = payload
+        return "confirm"
+
+    monkeypatch.setattr(nodes, "interrupt", fake_interrupt)
+
+    result = nodes.human_note_review_node(
+        {
+            "title": "paper",
+            "note_path": str(note_path),
+        }
+    )
+
+    assert result["status"] == "note_confirmed_by_user"
+    assert "# Draft From Disk" in str(captured["payload"])
+
+
+def test_revise_node_answers_question_then_rewrites_note(monkeypatch, tmp_path):
+    calls: dict[str, str] = {}
+
+    class FakeLLM:
+        def answer_note_question(self, *, title: str, current_note: str, user_question: str) -> str:
+            del title
+            calls["question_input"] = current_note
+            calls["question"] = user_question
+            return "这是基于当前笔记给出的回答"
+
+        def revise_note(self, *, title: str, current_note: str, user_message: str) -> str:
+            del title
+            calls["revision_input"] = current_note
+            calls["revision_prompt"] = user_message
+            return current_note + "\n\n## 更新\n\n已补充说明"
+
+    class FakeRepo:
+        def get_paper(self, title: str) -> tools.Paper:
+            return tools.Paper(title=title, pdf_path=str(tmp_path / "paper.pdf"))
+
+    monkeypatch.setattr(nodes, "get_llm", lambda: FakeLLM())
+    monkeypatch.setattr(nodes, "get_repository", lambda: FakeRepo())
+
+    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.4 test")
+    note_path = tmp_path / "paper.notes.md"
+    note_path.write_text("# Draft\n\nexisting", encoding="utf-8")
+
+    result = nodes.revise_deep_analysis_note_node(
+        {
+            "title": "paper",
+            "note_path": str(note_path),
+            "user_message": "这个方法为什么有效？",
+        }
+    )
+
+    assert result["status"] == "deep_analysis_draft_revised"
+    assert result["question_answer"] == "这是基于当前笔记给出的回答"
+    assert calls["question"] == "这个方法为什么有效？"
+    assert calls["question_input"] == "# Draft\n\nexisting"
+    assert "这个方法为什么有效？" in calls["revision_prompt"]
+    assert "这是基于当前笔记给出的回答" in calls["revision_prompt"]
+    assert "已补充说明" in note_path.read_text(encoding="utf-8")
 
 
 def test_human_note_review_skips_interrupt_for_graph_table_tool_call(monkeypatch, tmp_path):

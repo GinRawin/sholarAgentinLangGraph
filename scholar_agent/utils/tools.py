@@ -25,68 +25,6 @@ from scholar_agent.utils.state import Paper, SummaryResult
 
 SCHEMA_VERSION = 2
 
-SUMMARY_TEMPLATE = """你是一个严谨的学术论文阅读助手。
-
-请阅读随附的论文 PDF，生成结构化摘要，并尽量从已有关键词和分类中复用合适条目。
-
-已有关键词：
-{known_keywords}
-
-已有分类：
-{known_categories}
-
-输出要求：
-[研究问题]
-[核心方法]
-[主要结论]
-"""
-
-
-DEEP_ANALYSIS_TEMPLATE = """你是一个学术研究助理，具有深厚的学术背景和丰富的研究经验，你需要生成可迭代修改的论文笔记初稿。
-
-请阅读随附的新论文 PDF，并与同分类历史论文进行对比。历史笔记只作为比较和关联材料，不要编造原文中没有的信息。
-
-同分类历史笔记：
-{related_notes}
-
-输出笔记结构：
-```markdown
-# [论文标题]
-
-## 📋 基本信息
-- **论文标题**: [论文标题]
-- **作者**: [作者姓名]
-- **发表信息**: [会议/期刊, 年份]
-
-## 🎯 研究背景
-[2-3 段，简要描述研究背景、动机和问题的重要性，以及现有工作局限性]
-
-## 💡 核心问题
-[1-2 段，明确说明论文试图解决的关键问题]
-
-## 🔬 方法论
-[详细描述论文采用的主要方法、算法或技术框架，包括关键创新点]
-
-## ⭐ 主要贡献
-[列出论文的核心贡献点，每点用简洁的语句描述]
-
-## 📊 实验结果
-[总结主要实验设置、数据集、对比工作、性能指标和关键结果]
-
-## ✅ 结论与启示
-[总结论文的主要结论和对领域的贡献，以及实际应用价值]
-
-## ⚠️ 局限性与未来工作
-[指出论文存在的不足和可能的改进方向]
-
-## 🔗 与已有工作的关系
-[分析论文与同分类历史笔记中涉及的论文之间的关系，包括研究问题、方法和结果上的异同]
-
-## 📚 关键术语
-[列出论文中的关键术语及其解释（如有必要）]
-```
-"""
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -131,6 +69,15 @@ class LLMClient(Protocol):
         ...
 
     def revise_note(self, *, title: str, current_note: str, user_message: str) -> str:
+        ...
+
+    def answer_note_question(
+        self,
+        *,
+        title: str,
+        current_note: str,
+        user_question: str,
+    ) -> str:
         ...
 
 
@@ -203,6 +150,16 @@ class PlaceholderLLMClient:
             f"{user_message.strip()}\n"
         )
 
+    def answer_note_question(
+        self,
+        *,
+        title: str,
+        current_note: str,
+        user_question: str,
+    ) -> str:
+        del current_note
+        return f"[Placeholder answer for {title}] {user_question.strip()}"
+
 
 @dataclass(slots=True)
 class DeepSeekLLMClient:
@@ -270,6 +227,23 @@ class DeepSeekLLMClient:
                 f"当前笔记：\n{current_note}\n\n"
                 f"用户修改意见：\n{user_message}\n\n"
                 "请返回完整修订后的笔记，不要解释。"
+            ),
+        ).strip()
+
+    def answer_note_question(
+        self,
+        *,
+        title: str,
+        current_note: str,
+        user_question: str,
+    ) -> str:
+        return self._chat(
+            system_message="你是一个严谨的学术研究助理，请基于当前论文笔记回答用户问题。",
+            user_message=(
+                f"论文标题：{title}\n\n"
+                f"当前笔记：\n{current_note}\n\n"
+                f"用户问题：\n{user_question}\n\n"
+                "请直接回答问题；如果当前笔记无法支持明确结论，要明确说明不确定点。"
             ),
         ).strip()
 
@@ -817,9 +791,24 @@ def read_related_notes(paths: list[str]) -> str:
     return "\n".join(chunks).strip()
 
 
-def write_final_note(*, paper: Paper, final_note: str) -> Path:
+def read_note(path: Path | str) -> str:
+    note_path = Path(path)
+    return note_path.read_text(encoding="utf-8")
+
+
+def note_output_path_for_paper(paper: Paper) -> Path:
     pdf_path = Path(paper.pdf_path)
-    note_path = pdf_path.with_name(f"{safe_filename(paper.title)}.notes.md")
+    return pdf_path.with_name(f"{safe_filename(paper.title)}.notes.md")
+
+
+def write_draft_note(*, paper: Paper, draft_note: str) -> Path:
+    note_path = note_output_path_for_paper(paper)
+    note_path.write_text(draft_note, encoding="utf-8")
+    return note_path
+
+
+def write_final_note(*, paper: Paper, final_note: str) -> Path:
+    note_path = note_output_path_for_paper(paper)
     note_path.write_text(final_note, encoding="utf-8")
     return note_path
 
