@@ -83,6 +83,7 @@ class LLMClient(Protocol):
         title: str,
         current_note: str,
         user_question: str,
+        pdf_attachment: PdfAttachment,
     ) -> str:
         ...
 
@@ -168,8 +169,9 @@ class PlaceholderLLMClient:
         title: str,
         current_note: str,
         user_question: str,
+        pdf_attachment: PdfAttachment,
     ) -> str:
-        del current_note
+        del current_note, pdf_attachment
         return f"[Placeholder answer for {title}] {user_question.strip()}"
 
 
@@ -254,14 +256,19 @@ class DeepSeekLLMClient:
         title: str,
         current_note: str,
         user_question: str,
+        pdf_attachment: PdfAttachment,
     ) -> str:
         return self._chat(
-            system_message="你是一个严谨的学术研究助理，请基于当前论文笔记回答用户问题。",
-            user_message=(
-                f"论文标题：{title}\n\n"
-                f"当前笔记：\n{current_note}\n\n"
-                f"用户问题：\n{user_question}\n\n"
-                "请直接回答问题；如果当前笔记无法支持明确结论，要明确说明不确定点。"
+            system_message="你是一个严谨的学术研究助理，请基于论文原文和当前笔记回答用户问题。",
+            user_message=self._build_pdf_user_message(
+                text=(
+                    f"论文标题：{title}\n\n"
+                    f"当前笔记：\n{current_note}\n\n"
+                    f"用户问题：\n{user_question}\n\n"
+                    "请优先依据随附论文 PDF 作答，并结合当前笔记帮助组织答案。"
+                    "如果论文和笔记都无法支持明确结论，要明确说明不确定点。"
+                ),
+                pdf_attachment=pdf_attachment,
             ),
         ).strip()
 

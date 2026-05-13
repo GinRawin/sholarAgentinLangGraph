@@ -6,7 +6,7 @@ from typing import Literal, TypedDict
 
 
 UserDecision = Literal["deep_analysis", "skip"]
-NoteReviewAction = Literal["revise", "confirm"]
+NoteReviewAction = Literal["ask_question", "finish_qa", "confirm"]
 
 
 @dataclass(slots=True)
@@ -50,6 +50,11 @@ class PaperRecord(TypedDict, total=False):
     categories: list[str]
 
 
+class QATurn(TypedDict):
+    question: str
+    answer: str
+
+
 class ResearchAgentState(TypedDict, total=False):
     status: str
     error: str
@@ -70,7 +75,10 @@ class ResearchAgentState(TypedDict, total=False):
     user_decision: UserDecision
     note_review_action: NoteReviewAction
     user_message: str
+    latest_question: str
+    latest_answer: str
     question_answer: str
+    qa_history: list[QATurn]
     final_note: str
 
     related_note_paths: list[str]

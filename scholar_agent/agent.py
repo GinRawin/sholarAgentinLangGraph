@@ -17,6 +17,7 @@ from scholar_agent.utils.nodes import (
     initialize_memory_node,
     load_review_queue_node,
     prepare_deep_analysis_context_node,
+    question_and_answer_node,
     record_summary_decision_node,
     revise_deep_analysis_note_node,
     save_final_note_node,
@@ -47,7 +48,14 @@ def route_after_summary_decision(state: ResearchAgentState) -> str:
 def route_after_note_review(state: ResearchAgentState) -> str:
     if state.get("note_review_action") == "confirm":
         return "save_final_note"
-    return "revise_deep_analysis_note"
+    if state.get("note_review_action") == "finish_qa":
+        return "revise_deep_analysis_note"
+    return "question_and_answer"
+
+
+def route_after_question_and_answer(state: ResearchAgentState) -> str:
+    del state
+    return "human_note_review"
 
 
 def build_graph(*, checkpointer: Any | None = None):
@@ -63,6 +71,7 @@ def build_graph(*, checkpointer: Any | None = None):
     builder.add_node("prepare_deep_analysis_context", prepare_deep_analysis_context_node)
     builder.add_node("draft_deep_analysis_note", draft_deep_analysis_note_node)
     builder.add_node("human_note_review", human_note_review_node)
+    builder.add_node("question_and_answer", question_and_answer_node)
     builder.add_node("revise_deep_analysis_note", revise_deep_analysis_note_node)
     builder.add_node("save_final_note", save_final_note_node)
 
@@ -101,11 +110,19 @@ def build_graph(*, checkpointer: Any | None = None):
         "human_note_review",
         route_after_note_review,
         {
+            "question_and_answer": "question_and_answer",
             "revise_deep_analysis_note": "revise_deep_analysis_note",
             "save_final_note": "save_final_note",
         },
     )
-    builder.add_edge("revise_deep_analysis_note", "human_note_review")
+    builder.add_conditional_edges(
+        "question_and_answer",
+        route_after_question_and_answer,
+        {
+            "human_note_review": "human_note_review",
+        },
+    )
+    builder.add_edge("revise_deep_analysis_note", "save_final_note")
     builder.add_edge("save_final_note", "load_review_queue")
 
     if checkpointer is None:

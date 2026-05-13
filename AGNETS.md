@@ -63,6 +63,7 @@
 - `prepare_deep_analysis_context_node`
 - `draft_deep_analysis_note_node`
 - `human_note_review_node`
+- `question_and_answer_node`
 - `revise_deep_analysis_note_node`
 - `save_final_note_node`
 
@@ -73,6 +74,7 @@
 - `generate_summary_node` 直接把 `build_pdf_attachment(paper.pdf_path)` 传给 LLM
 - `prepare_deep_analysis_context_node` 先筛选同分类历史笔记，再按关键词命中数排序，保留前 5 篇
 - `draft_deep_analysis_note_node` 也直接把 PDF 附件传给 LLM，并在首次生成后立即把草稿写到 `*.notes.md`
+- `question_and_answer_node` 会基于当前论文 PDF 和当前草稿单独回答用户问题，并把问答历史写回 state
 - 本地主要负责扫描文件、提取标题、构造附件和保存结果
 
 当前两个 human 节点的输入约定：
@@ -84,9 +86,17 @@
   - `1 -> skip`
 - `human_note_review_node`
   - 展示的是当前已落盘的笔记内容
+  - 也会把最近一次回答和累计问答历史带给前端展示
   - 把返回值按字符串处理
   - 第一个词是 `confirm` 就走保存
-  - 其他情况都视为用户问题或修改请求，先回答问题，再基于回答修订笔记并覆盖原草稿文件
+  - 第一个词是 `done` 就结束问答并进入修订
+  - 其他情况都视为用户问题，先进入 `question_and_answer_node`
+- `question_and_answer_node`
+  - 只负责回答问题，不直接改笔记
+  - 每轮都会把 `{question, answer}` 追加到 `qa_history`
+- `revise_deep_analysis_note_node`
+  - 基于累计问答记录统一修订草稿
+  - 修订后直接进入保存，不再回到 human 节点
 
 ### `scholar_agent/utils/tools.py`
 

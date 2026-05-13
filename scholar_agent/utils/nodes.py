@@ -239,8 +239,13 @@ def human_note_review_node(state: ResearchAgentState) -> ResearchAgentState:
             "kind": "note_review",
             "title": state.get("title", ""),
             "draft_note": draft_note,
-            "prompt": "请给出修改意见，或确认终稿。",
-            "allowed_actions": ["revise", "confirm"],
+            "latest_answer": state.get("latest_answer", ""),
+            "qa_history": state.get("qa_history", []),
+            "prompt": (
+                "如需继续追问，请直接输入问题；输入 done 表示问答结束并据此修订笔记；"
+                "输入 confirm 表示直接确认终稿。"
+            ),
+            "allowed_actions": ["ask_question", "done", "confirm"],
         }
     )
     message = str(payload).strip()
@@ -252,11 +257,62 @@ def human_note_review_node(state: ResearchAgentState) -> ResearchAgentState:
             "note_review_action": "confirm",
             "final_note": final_note,
         }
+    if first_word == "done":
+        return {
+            "status": "note_questions_completed_by_user",
+            "note_review_action": "finish_qa",
+        }
 
     return {
-        "status": "note_revision_requested_by_user",
-        "note_review_action": "revise",
+        "status": "note_question_requested_by_user",
+        "note_review_action": "ask_question",
+        "latest_question": message,
         "user_message": message,
+    }
+
+
+def question_and_answer_node(state: ResearchAgentState) -> ResearchAgentState:
+    repository = get_repository()
+    llm = get_llm()
+    title = state.get("title")
+    note_path = state.get("note_path")
+    latest_question = state.get("latest_question") or state.get("user_message")
+    if not title or not latest_question:
+        return {
+            "status": "error",
+            "error": "title and latest_question are required",
+        }
+
+    paper = repository.get_paper(title)
+    if paper is None:
+        return {"status": "error", "error": f"Paper not found: {title}"}
+
+    current_note = state.get("draft_note", "")
+    if note_path:
+        try:
+            current_note = read_note(note_path)
+        except FileNotFoundError:
+            current_note = state.get("draft_note", "")
+
+    answer = llm.answer_note_question(
+        title=title,
+        current_note=current_note,
+        user_question=latest_question,
+        pdf_attachment=build_pdf_attachment(paper.pdf_path),
+    )
+    qa_history = list(state.get("qa_history", []))
+    qa_history.append(
+        {
+            "question": latest_question,
+            "answer": answer,
+        }
+    )
+    return {
+        "status": "question_answered",
+        "latest_question": latest_question,
+        "latest_answer": answer,
+        "question_answer": answer,
+        "qa_history": qa_history,
     }
 
 
@@ -264,11 +320,10 @@ def revise_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentSt
     llm = get_llm()
     title = state.get("title")
     note_path = state.get("note_path")
-    user_message = state.get("user_message")
-    if not title or not note_path or not user_message:
+    if not title or not note_path:
         return {
             "status": "error",
-            "error": "title, note_path, and user_message are required",
+            "error": "title and note_path are required",
         }
 
     try:
@@ -279,15 +334,26 @@ def revise_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentSt
             "error": f"Note file not found: {note_path}",
         }
 
-    question_answer = llm.answer_note_question(
-        title=title,
-        current_note=current_note,
-        user_question=user_message,
+    qa_history = state.get("qa_history", [])
+    if not qa_history:
+        return {
+            "status": "deep_analysis_draft_revised",
+            "draft_note": current_note,
+            "note_path": str(note_path),
+        }
+
+    conversation = "\n\n".join(
+        (
+            f"第 {index} 轮问答\n"
+            f"问题：{turn['question'].strip()}\n"
+            f"回答：{turn['answer'].strip()}"
+        )
+        for index, turn in enumerate(qa_history, start=1)
     )
     revision_prompt = (
-        f"用户问题或修改请求：\n{user_message.strip()}\n\n"
-        f"针对该问题的回答：\n{question_answer.strip()}\n\n"
-        "请基于上面的回答更新整篇笔记，返回完整修订后的笔记。"
+        "下面是用户围绕论文细节的问答记录。"
+        "请基于这些已经澄清的信息更新整篇笔记，返回完整修订后的笔记。\n\n"
+        f"{conversation}"
     )
     revised = llm.revise_note(
         title=title,
@@ -302,7 +368,6 @@ def revise_deep_analysis_note_node(state: ResearchAgentState) -> ResearchAgentSt
     write_draft_note(paper=paper, draft_note=revised)
     return {
         "status": "deep_analysis_draft_revised",
-        "question_answer": question_answer,
         "draft_note": revised,
         "note_path": str(note_path),
     }

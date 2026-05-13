@@ -23,7 +23,12 @@ def test_route_after_summary_decision():
 
 def test_route_after_note_review():
     assert agent.route_after_note_review({"note_review_action": "confirm"}) == "save_final_note"
-    assert agent.route_after_note_review({"note_review_action": "revise"}) == "revise_deep_analysis_note"
+    assert agent.route_after_note_review({"note_review_action": "finish_qa"}) == "revise_deep_analysis_note"
+    assert agent.route_after_note_review({"note_review_action": "ask_question"}) == "question_and_answer"
+
+
+def test_route_after_question_and_answer():
+    assert agent.route_after_question_and_answer({}) == "human_note_review"
 
 
 def test_human_summary_review_normalizes_numeric_decision(monkeypatch):
@@ -71,6 +76,73 @@ def test_human_note_review_reads_note_from_disk(monkeypatch, tmp_path):
     assert "# Draft From Disk" in str(captured["payload"])
 
 
+def test_human_note_review_routes_done_to_finish_qa(monkeypatch):
+    monkeypatch.setattr(nodes, "interrupt", lambda payload: "done")
+
+    result = nodes.human_note_review_node(
+        {
+            "title": "paper",
+            "draft_note": "# Draft",
+            "qa_history": [{"question": "Q1", "answer": "A1"}],
+            "latest_answer": "A1",
+        }
+    )
+
+    assert result["status"] == "note_questions_completed_by_user"
+    assert result["note_review_action"] == "finish_qa"
+
+
+def test_question_and_answer_node_records_history_and_returns_answer(monkeypatch, tmp_path):
+    calls: dict[str, str] = {}
+
+    class FakeLLM:
+        def answer_note_question(
+            self,
+            *,
+            title: str,
+            current_note: str,
+            user_question: str,
+            pdf_attachment: tools.PdfAttachment,
+        ) -> str:
+            calls["title"] = title
+            calls["current_note"] = current_note
+            calls["user_question"] = user_question
+            calls["pdf_filename"] = pdf_attachment.filename
+            return "这是问题的答案"
+
+    class FakeRepo:
+        def get_paper(self, title: str) -> tools.Paper:
+            return tools.Paper(title=title, pdf_path=str(tmp_path / "paper.pdf"))
+
+    monkeypatch.setattr(nodes, "get_llm", lambda: FakeLLM())
+    monkeypatch.setattr(nodes, "get_repository", lambda: FakeRepo())
+
+    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.4 test")
+    note_path = tmp_path / "paper.notes.md"
+    note_path.write_text("# Draft\n\nexisting", encoding="utf-8")
+
+    result = nodes.question_and_answer_node(
+        {
+            "title": "paper",
+            "note_path": str(note_path),
+            "latest_question": "这个方法为什么有效？",
+            "qa_history": [{"question": "Q0", "answer": "A0"}],
+        }
+    )
+
+    assert result["status"] == "question_answered"
+    assert result["latest_answer"] == "这是问题的答案"
+    assert result["question_answer"] == "这是问题的答案"
+    assert result["qa_history"] == [
+        {"question": "Q0", "answer": "A0"},
+        {"question": "这个方法为什么有效？", "answer": "这是问题的答案"},
+    ]
+    assert calls["title"] == "paper"
+    assert calls["current_note"] == "# Draft\n\nexisting"
+    assert calls["user_question"] == "这个方法为什么有效？"
+    assert calls["pdf_filename"] == "paper.pdf"
+
+
 def test_draft_node_writes_note_file(monkeypatch, tmp_path):
     class FakeLLM:
         def draft_deep_note(
@@ -113,22 +185,10 @@ def test_draft_node_writes_note_file(monkeypatch, tmp_path):
     assert note_path.read_text(encoding="utf-8") == "# Draft\n\ncontent"
 
 
-def test_revise_node_answers_question_then_rewrites_note(monkeypatch, tmp_path):
+def test_revise_node_uses_qa_history_to_rewrite_note(monkeypatch, tmp_path):
     calls: dict[str, str] = {}
 
     class FakeLLM:
-        def answer_note_question(
-            self,
-            *,
-            title: str,
-            current_note: str,
-            user_question: str,
-        ) -> str:
-            del title
-            calls["question_input"] = current_note
-            calls["question"] = user_question
-            return "这是基于当前笔记给出的回答"
-
         def revise_note(
             self,
             *,
@@ -156,16 +216,18 @@ def test_revise_node_answers_question_then_rewrites_note(monkeypatch, tmp_path):
         {
             "title": "paper",
             "note_path": str(note_path),
-            "user_message": "这个方法为什么有效？",
+            "qa_history": [
+                {
+                    "question": "这个方法为什么有效？",
+                    "answer": "因为它利用了更稳定的特征表示。",
+                }
+            ],
         }
     )
 
     assert result["status"] == "deep_analysis_draft_revised"
-    assert result["question_answer"] == "这是基于当前笔记给出的回答"
-    assert calls["question"] == "这个方法为什么有效？"
-    assert calls["question_input"] == "# Draft\n\nexisting"
     assert "这个方法为什么有效？" in calls["revision_prompt"]
-    assert "这是基于当前笔记给出的回答" in calls["revision_prompt"]
+    assert "因为它利用了更稳定的特征表示。" in calls["revision_prompt"]
     assert "已补充说明" in note_path.read_text(encoding="utf-8")
 
 
